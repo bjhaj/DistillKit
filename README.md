@@ -5,7 +5,7 @@ This project implements a knowledge distillation pipeline for CIFAR-10 classific
 ## Project Structure
 
 ```
-kd_quantization_project/
+DistillKit/
 ├── data/
 │   └── cifar10_loader.py            # Dataset loading and transforms
 ├── models/

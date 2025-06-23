@@ -50,19 +50,19 @@ def parse_args():
                       help='Weight for soft loss vs hard loss')
     
     # Regularization parameters
-    parser.add_argument('--dropout-rate', type=float, default=0.3,
+    parser.add_argument('--dropout-rate', type=float, default=0.05,
                       help='Dropout rate for student model')
-    parser.add_argument('--mixup-alpha', type=float, default=0.2,
+    parser.add_argument('--mixup-alpha', type=float, default=0.0,
                       help='Mixup alpha parameter (0 to disable)')
-    parser.add_argument('--early-stopping-patience', type=int, default=7,
+    parser.add_argument('--early-stopping-patience', type=int, default=20,
                       help='Early stopping patience')
-    parser.add_argument('--label-smoothing', type=float, default=0.1,
+    parser.add_argument('--label-smoothing', type=float, default=0.0,
                       help='Label smoothing factor')
     
     return parser.parse_args()
 
-def train_teacher_model(train_loader, test_loader, num_epochs, lr, device):
-    """Train the teacher model using standard supervised learning."""
+def train_teacher_model(train_loader, test_loader, num_epochs, lr, device, early_stopping_patience=20):
+    """Train the teacher model using standard supervised learning with minimal early stopping."""
     logger.info("Training teacher model...")
     teacher_model = get_teacher(pretrained=True)
     teacher_history = train_supervised(
@@ -71,7 +71,8 @@ def train_teacher_model(train_loader, test_loader, num_epochs, lr, device):
         test_loader,
         num_epochs=num_epochs,
         lr=lr,
-        device=device
+        device=device,
+        early_stopping_patience=early_stopping_patience
     )
     # Save teacher training history
     with open(TRAINING_HISTORY_PATH.replace('.json', '_teacher.json'), 'w') as f:
@@ -88,10 +89,10 @@ def generate_soft_labels_from_teacher(teacher_model, train_loader, temperature, 
     return soft_targets, hard_labels, images
 
 def train_student_model(train_loader, test_loader, temperature, alpha, lr, num_epochs, device, 
-                       mixup_alpha=0.0, early_stopping_patience=10):
-    """Train the student model using knowledge distillation with same safeguards as baseline."""
+                       mixup_alpha=0.0, early_stopping_patience=20):
+    """Train the student model using knowledge distillation with minimal regularization."""
     logger.info("Training student model with distillation...")
-    student_model = get_student(dropout_rate=0.3)  # Same dropout as baseline
+    student_model = get_student(dropout_rate=0.05)  # Minimal dropout
     student_model = student_model.to(device)
     
     # Get the distillation data loader with soft labels
@@ -112,10 +113,10 @@ def train_student_model(train_loader, test_loader, temperature, alpha, lr, num_e
     save_student(student_model, get_model_path('student'))
     return student_model, history
 
-def train_small_model(train_loader, test_loader, num_epochs, lr, device, dropout_rate=0.3, early_stopping_patience=7):
-    """Train the small model using standard supervised learning."""
+def train_small_model(train_loader, test_loader, num_epochs, lr, device, dropout_rate=0.05, early_stopping_patience=20):
+    """Train the small model using standard supervised learning with minimal regularization."""
     logger.info("Training small model without distillation...")
-    small_model = get_student(dropout_rate=dropout_rate)  # Pass dropout rate
+    small_model = get_student(dropout_rate=dropout_rate)  # Minimal dropout
     small_model = small_model.to(device)
     
     history = train_supervised(
@@ -143,7 +144,7 @@ def main():
     # Train teacher model
     if args.train_teacher:
         logger.info("Training teacher model...")
-        teacher_model = train_teacher_model(train_loader, test_loader, args.num_epochs, args.lr, args.device)
+        teacher_model = train_teacher_model(train_loader, test_loader, args.num_epochs, args.lr, args.device, args.early_stopping_patience)
     
     # Generate soft labels
     if args.generate_soft_labels:

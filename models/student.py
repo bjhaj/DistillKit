@@ -3,41 +3,34 @@ import torch.nn as nn
 from torchvision.models import resnet18
 
 class StudentModel(nn.Module):
-    """Enhanced student model with dropout and regularization."""
+    """Enhanced student model with minimal regularization for better convergence."""
     
-    def __init__(self, num_classes=10, dropout_rate=0.3):
+    def __init__(self, num_classes=10, dropout_rate=0.05):
         super(StudentModel, self).__init__()
         
         # Base ResNet18
         self.backbone = resnet18(weights=None)
         
-        # Modify for CIFAR-10
-        self.backbone.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.backbone.maxpool = nn.Identity()
-        
-        # Get feature dimension
-        num_features = self.backbone.fc.in_features
-        
-        # Replace final layer with dropout regularization
+        # Replace final layer with minimal dropout
         self.backbone.fc = nn.Sequential(
             nn.Dropout(dropout_rate),
             nn.Linear(num_features, num_classes)
         )
         
-        # Add batch normalization momentum for better regularization
+        # Use default batch normalization momentum for better convergence
         for m in self.modules():
             if isinstance(m, nn.BatchNorm2d):
-                m.momentum = 0.01  # Slower moving average for better regularization
+                m.momentum = 0.1  # Default momentum for better convergence
     
     def forward(self, x):
         return self.backbone(x)
 
-def get_student(dropout_rate=0.3):
+def get_student(dropout_rate=0.05):
     """
-    Get a student model with enhanced regularization.
+    Get a student model with minimal regularization for better convergence.
     
     Args:
-        dropout_rate (float): Dropout probability
+        dropout_rate (float): Dropout probability (default: 0.05)
         
     Returns:
         nn.Module: Configured student model

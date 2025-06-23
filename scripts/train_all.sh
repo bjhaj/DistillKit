@@ -1,17 +1,17 @@
 #!/bin/bash
 export PYTHONPATH=$(pwd):$PYTHONPATH
 
-echo "Step 1: Training teacher model with pretrained ResNet152..."
-python3 scripts/run_all.py --train-teacher --num-epochs 150 --lr 0.001 --early-stopping-patience 5
+#echo "Step 1: Training teacher model with pretrained ResNet152..."
+#python3 scripts/run_all.py --train-teacher --num-epochs 20 --lr 0.05
 
 echo "Step 2: Generating soft labels from teacher..."
 python3 scripts/run_all.py --generate-soft-labels
 
 echo "Step 3: Training student model with distillation..."
-python3 scripts/run_all.py --train-student --num-epochs 150 --dropout-rate 0.3 --mixup-alpha 0.2
+python3 scripts/run_all.py --train-student --num-epochs 20 --dropout-rate 0.3 --early-stopping-patience 7 --mixup-alpha 0.2
 
 echo "Step 4: Training baseline model..."
-python3 scripts/run_all.py --train-baseline --num-epochs 150 --dropout-rate 0.3 --early-stopping-patience 7
+python3 scripts/run_all.py --train-baseline --num-epochs 20 --dropout-rate 0.3 --early-stopping-patience 7 --mixup-alpha 0.2
 
 echo "Step 5: Quantizing student model..."
 python3 scripts/run_all.py --quantize

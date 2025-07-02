@@ -1,59 +1,51 @@
 import torch
 import torch.nn as nn
-from torchvision.models import resnet18
+from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
+from models.teacher import unfreeze_layers_progressively
 
-class StudentModel(nn.Module):
-    """Enhanced student model with minimal regularization for better convergence."""
-    
-    def __init__(self, num_classes=10, dropout_rate=0.05):
-        super(StudentModel, self).__init__()
-        
-        # Base ResNet18
-        self.backbone = resnet18(weights=None)
-        
-        # Replace final layer with minimal dropout
-        self.backbone.fc = nn.Sequential(
-            nn.Dropout(dropout_rate),
-            nn.Linear(num_features, num_classes)
-        )
-        
-        # Use default batch normalization momentum for better convergence
-        for m in self.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                m.momentum = 0.1  # Default momentum for better convergence
-    
-    def forward(self, x):
-        return self.backbone(x)
-
-def get_student(dropout_rate=0.05):
+def get_student(dropout_rate=0.05, quantize=True):
     """
-    Get a student model with minimal regularization for better convergence.
+    Returns a MobileNetV2 model adapted for CIFAR-10.
     
     Args:
-        dropout_rate (float): Dropout probability (default: 0.05)
-        
+        dropout_rate (float): Dropout before final layer
+        quantize (bool): Whether to prepare the model for quantization
+    
     Returns:
-        nn.Module: Configured student model
+        nn.Module: MobileNetV2-based student model
     """
-    return StudentModel(num_classes=10, dropout_rate=dropout_rate)
+    net = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+    
+    # Modify classifier for CIFAR-10
+    net.features[0][0] = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False)
+
+    net.classifier = nn.Sequential(
+        #nn.Dropout(dropout_rate),
+        nn.Linear(net.last_channel, 10)
+    )
+
+    return net
+
 
 def save_student(model, path):
     """Save student model weights."""
     torch.save(model.state_dict(), path)
 
-def load_student(path, device=None):
+
+def load_student(path, device=None, quantize=False):
     """
     Load a saved student model.
     
     Args:
         path (str): Path to saved model weights
         device (str, optional): Device to load model on
+        quantize (bool): If True, prepare the model for QAT
         
     Returns:
         nn.Module: Loaded student model
     """
-    model = get_student()
+    model = get_student(quantize=quantize)
     model.load_state_dict(torch.load(path, map_location=device))
     if device:
         model = model.to(device)
-    return model 
+    return model

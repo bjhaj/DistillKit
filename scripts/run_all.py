@@ -8,7 +8,7 @@ from data.cifar10_loader import get_cifar10_loaders, get_distillation_loader
 from models.teacher import get_teacher, save_teacher, train_supervised, load_teacher
 from models.student import get_student, save_student
 from distillation.generate_soft_labels import generate_soft_labels, save_distillation_data
-from distillation.train_student import train_student
+from distillation.train_student import distill_model
 from quantization.quantize_model import quantize_student_model, evaluate_quantized_model
 from utils.metrics import evaluate_model, measure_inference_time, get_model_size, format_size
 from utils.paths import (
@@ -88,24 +88,23 @@ def generate_soft_labels_from_teacher(teacher_model, train_loader, temperature, 
     save_distillation_data(soft_targets, hard_labels, images)
     return soft_targets, hard_labels, images
 
-def train_student_model(train_loader, test_loader, temperature, alpha, lr, num_epochs, device, 
-                       mixup_alpha=0.0, early_stopping_patience=20):
+def train_student_model(train_loader, test_loader, alpha, num_epochs, device, 
+                        temperature=4.0, lr=0.05, early_stopping_patience=20, dropout_rate=0.3):
     """Train the student model using knowledge distillation with minimal regularization."""
     logger.info("Training student model with distillation...")
-    student_model = get_student(dropout_rate=0.05)  # Minimal dropout
+    student_model = get_student(dropout_rate)  # Use dropout rate for student model
     student_model = student_model.to(device)
     
     # Get the distillation data loader with soft labels
     distillation_loader = get_distillation_loader(batch_size=train_loader.batch_size)
     
-    history = train_student(
+    history = distill_model(
         student_model, distillation_loader, test_loader,
         temperature=temperature,
         alpha=alpha,
         lr=lr,
         num_epochs=num_epochs,
         device=device,
-        mixup_alpha=mixup_alpha,
         early_stopping_patience=early_stopping_patience
     )
     
@@ -124,7 +123,8 @@ def train_small_model(train_loader, test_loader, num_epochs, lr, device, dropout
         num_epochs=num_epochs,
         lr=lr,
         device=device,
-        early_stopping_patience=early_stopping_patience
+        early_stopping_patience=early_stopping_patience,
+        model_kind='small',
     )
     # Save small model
     save_student(small_model, get_model_path('small'))
@@ -156,8 +156,15 @@ def main():
     if args.train_student:
         logger.info("Training student model with distillation...")
         student_model, history = train_student_model(
-            train_loader, test_loader, args.temperature, args.alpha, args.lr, args.num_epochs, args.device,
-            mixup_alpha=args.mixup_alpha, early_stopping_patience=args.early_stopping_patience
+            train_loader=train_loader,
+            test_loader=test_loader,
+            temperature=args.temperature,
+            alpha=args.alpha,
+            lr=args.lr,
+            num_epochs=args.num_epochs,
+            device=args.device,
+            early_stopping_patience=args.early_stopping_patience,
+            dropout_rate=args.dropout_rate
         )
         # Save training history
         with open(TRAINING_HISTORY_PATH, 'w') as f:

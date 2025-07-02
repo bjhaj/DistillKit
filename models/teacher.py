@@ -23,9 +23,13 @@ def get_teacher(pretrained=True, freeze_backbone=True):
     # --- Define ResNet152 (ImageNet Pretrained) ---
     net = resnet152(weights=ResNet152_Weights.IMAGENET1K_V1)  # use pretrained weights
     
+    # 🔧 Patch input layers for CIFAR-10 (32x32 input)
+    net.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+    net.maxpool = nn.Identity()  # remove the downsampling maxpool
+    
     # Add dropout to the final layer for regularization
     net.fc = nn.Sequential(
-        nn.Dropout(0.5),
+        nn.Dropout(0.2),
         nn.Linear(net.fc.in_features, 10)
     )
     
@@ -65,7 +69,7 @@ def unfreeze_layers_progressively(model, epoch, unfreeze_schedule=None):
 
 
 def train_supervised(model, train_loader, test_loader, num_epochs=20, lr=0.01, device='cuda', 
-                    early_stopping_patience=7, min_delta=0.001, use_progressive_unfreezing=True):
+                    early_stopping_patience=7, min_delta=0.001, use_progressive_unfreezing=True, model_kind='teacher'):
     """
     Enhanced supervised training loop with aggressive regularization for teacher model.
     """
@@ -158,7 +162,7 @@ def train_supervised(model, train_loader, test_loader, num_epochs=20, lr=0.01, d
         if current_acc > best_acc + min_delta:
             best_acc = current_acc
             patience_counter = 0
-            save_teacher(model, get_model_path('teacher'))
+            save_teacher(model, get_model_path(model_kind))
         else:
             patience_counter += 1
         

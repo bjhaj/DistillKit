@@ -5,6 +5,8 @@ import torch.optim as optim
 from tqdm import tqdm
 import logging
 import numpy as np
+from models.teacher import unfreeze_layers_progressively, save_teacher, get_model_path
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,9 +28,9 @@ def distillation_loss(student_logits, soft_targets, hard_labels, temperature, al
     # Soft loss: KL Divergence
     soft_loss = F.kl_div(
         F.log_softmax(student_logits / temperature, dim=1),
-        soft_targets,
-        reduction='batchmean'
+        soft_targets, reduction='batchmean'
     ) * (temperature ** 2)
+
     
     # Hard loss: Cross Entropy
     hard_loss = F.cross_entropy(student_logits, hard_labels)
@@ -54,38 +56,19 @@ def mixup_criterion(criterion, pred, y_a, y_b, lam):
     """Mixup loss calculation."""
     return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
-def train_student(student_model, train_loader, test_loader, 
-                 temperature=4.0, alpha=0.7, lr=0.1, 
-                 num_epochs=100, device=None, mixup_alpha=0.0,
-                 early_stopping_patience=10, min_delta=0.001):
+
+def distill_model(model, train_loader, test_loader, num_epochs=20, lr=0.01, device='cuda', temperature=0.4, alpha=0.7,
+                    early_stopping_patience=7, min_delta=0.001, use_progressive_unfreezing=True, model_kind='student'):
     """
-    Enhanced student training with knowledge distillation and overfitting prevention.
-    
-    Args:
-        student_model (nn.Module): Student model to train
-        train_loader (DataLoader): Training data loader with soft targets
-        test_loader (DataLoader): Test data loader
-        temperature (float): Temperature for softmax scaling
-        alpha (float): Weight for soft loss vs hard loss
-        lr (float): Learning rate
-        num_epochs (int): Number of training epochs
-        device (str, optional): Device to train on
-        mixup_alpha (float): Mixup alpha parameter (0 to disable)
-        early_stopping_patience (int): Early stopping patience
-        min_delta (float): Minimum improvement for early stopping
-        
-    Returns:
-        list: Training history (losses and accuracies)
+    Enhanced supervised training loop with aggressive regularization for teacher model.
     """
-    if device is None:
-        device = next(student_model.parameters()).device
+    model = model.to(device)
     
-    student_model = student_model.to(device)
+    # --- Loss & Optimizer with stronger regularization ---
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.15)  # Increased label smoothing
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-3)  # Increased weight decay
     
-    # Enhanced optimizer with stronger regularization (same as baseline)
-    optimizer = optim.SGD(student_model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-3)
-    
-    # Same scheduler as baseline model for consistency
+    # More aggressive learning rate scheduling
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.3, 
                                                    patience=3, min_lr=1e-6)
     
@@ -94,61 +77,39 @@ def train_student(student_model, train_loader, test_loader,
     patience_counter = 0
     
     for epoch in range(num_epochs):
-        # Training
-        student_model.train()
+        # Progressive unfreezing to reduce overfitting
+        if use_progressive_unfreezing:
+            unfreeze_layers_progressively(model, epoch)
+        
+        # Training phase with stronger regularization
+        model.train()
         train_loss = 0
         train_correct = 0
         train_total = 0
         
         pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')
-        for batch in pbar:
-            if len(batch) == 3:  # Distillation dataset
-                images, soft_targets, hard_labels = batch
-            else:  # Regular dataset
-                images, hard_labels = batch
-                soft_targets = None
-            
+        for images, soft_targets, hard_labels  in pbar:
+
             images = images.to(device)
+            soft_targets = soft_targets.to(device)
             hard_labels = hard_labels.to(device)
-            if soft_targets is not None:
-                soft_targets = soft_targets.to(device)
-            
-            # Apply Mixup if enabled
-            if mixup_alpha > 0:
-                images, hard_labels_a, hard_labels_b, lam = mixup_data(images, hard_labels, mixup_alpha, device)
-            
+
             optimizer.zero_grad()
-            student_logits = student_model(images)
-            
-            if soft_targets is not None:
-                if mixup_alpha > 0:
-                    # For mixup with distillation, we use the hard loss part with mixup
-                    soft_loss = F.kl_div(
-                        F.log_softmax(student_logits / temperature, dim=1),
-                        soft_targets, reduction='batchmean'
-                    ) * (temperature ** 2)
-                    hard_loss = mixup_criterion(F.cross_entropy, student_logits, hard_labels_a, hard_labels_b, lam)
-                    loss = alpha * soft_loss + (1 - alpha) * hard_loss
-                else:
-                    loss = distillation_loss(
-                        student_logits, soft_targets, hard_labels,
+            outputs = model(images)
+
+            loss = distillation_loss(
+                        outputs, soft_targets, hard_labels,
                         temperature, alpha
                     )
-            else:
-                if mixup_alpha > 0:
-                    loss = mixup_criterion(F.cross_entropy, student_logits, hard_labels_a, hard_labels_b, lam)
-                else:
-                    loss = F.cross_entropy(student_logits, hard_labels)
-            
             loss.backward()
             
-            # Gradient clipping (same as baseline model)
-            torch.nn.utils.clip_grad_norm_(student_model.parameters(), max_norm=1.0)
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             
             optimizer.step()
             
             train_loss += loss.item()
-            _, predicted = student_logits.max(1)
+            _, predicted = outputs.max(1)
             train_total += hard_labels.size(0)
             train_correct += predicted.eq(hard_labels).sum().item()
             
@@ -157,24 +118,24 @@ def train_student(student_model, train_loader, test_loader,
                 'acc': 100. * train_correct / train_total
             })
         
-        # Evaluation
-        student_model.eval()
+        # Evaluation phase
+        model.eval()
         test_loss = 0
         test_correct = 0
         test_total = 0
         
         with torch.no_grad():
-            for images, labels in test_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = student_model(images)
-                loss = F.cross_entropy(outputs, labels)
+            for images, hard_labels in test_loader:
+                images, hard_labels = images.to(device), hard_labels.to(device)
+                outputs = model(images)
+                loss = criterion(outputs, hard_labels)
                 
                 test_loss += loss.item()
                 _, predicted = outputs.max(1)
-                test_total += labels.size(0)
-                test_correct += predicted.eq(labels).sum().item()
+                test_total += hard_labels.size(0)
+                test_correct += predicted.eq(hard_labels).sum().item()
         
-        # Update learning rate based on validation accuracy (same as baseline)
+        # Update learning rate based on validation accuracy
         scheduler.step(100. * test_correct / test_total)
         
         # Record metrics
@@ -187,7 +148,7 @@ def train_student(student_model, train_loader, test_loader,
         }
         history.append(metrics)
         
-        # Overfitting detection (same as baseline model)
+        # Overfitting detection
         train_val_gap = metrics['train_acc'] - metrics['test_acc']
         if train_val_gap > 10.0:  # Warning threshold
             logger.warning(f"Overfitting detected! Train-Val gap: {train_val_gap:.2f}%")
@@ -197,10 +158,11 @@ def train_student(student_model, train_loader, test_loader,
         if current_acc > best_acc + min_delta:
             best_acc = current_acc
             patience_counter = 0
+            save_teacher(model, get_model_path(model_kind))
         else:
             patience_counter += 1
         
-        # Check early stopping (also consider overfitting like baseline)
+        # Check early stopping (also consider overfitting)
         if patience_counter >= early_stopping_patience or train_val_gap > 20.0:
             if train_val_gap > 20.0:
                 logger.info(f"Stopping due to severe overfitting (gap: {train_val_gap:.2f}%)")

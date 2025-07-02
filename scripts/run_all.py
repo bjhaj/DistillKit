@@ -3,12 +3,15 @@ import torch
 import json
 import logging
 from pathlib import Path
+import torch.optim as optim
 
 from data.cifar10_loader import get_cifar10_loaders, get_distillation_loader
 from models.teacher import get_teacher, save_teacher, train_supervised, load_teacher
 from models.student import get_student, save_student
 from distillation.generate_soft_labels import generate_soft_labels, save_distillation_data
 from distillation.train_student import distill_model
+from distillation.train_student_online_kd import distill_teacher, DistillationLoss
+
 from quantization.quantize_model import quantize_student_model, evaluate_quantized_model
 from utils.metrics import evaluate_model, measure_inference_time, get_model_size, format_size
 from utils.paths import (
@@ -88,24 +91,29 @@ def generate_soft_labels_from_teacher(teacher_model, train_loader, temperature, 
     save_distillation_data(soft_targets, hard_labels, images)
     return soft_targets, hard_labels, images
 
-def train_student_model(train_loader, test_loader, alpha, num_epochs, device, 
-                        temperature=4.0, lr=0.05, early_stopping_patience=20, dropout_rate=0.3):
+def train_student_model(train_loader, test_loader, num_epochs, device, dropout_rate):
     """Train the student model using knowledge distillation with minimal regularization."""
     logger.info("Training student model with distillation...")
-    student_model = get_student(dropout_rate)  # Use dropout rate for student model
+    # Load teacher model
+    teacher_model = load_teacher(get_model_path('teacher'), device=device)
+    teacher_model.to(device)
+    # Load student model
+    student_model = get_student(0.1)  # Use dropout rate for student model
     student_model = student_model.to(device)
-    
-    # Get the distillation data loader with soft labels
-    distillation_loader = get_distillation_loader(batch_size=train_loader.batch_size)
-    
-    history = distill_model(
-        student_model, distillation_loader, test_loader,
-        temperature=temperature,
-        alpha=alpha,
-        lr=lr,
-        num_epochs=num_epochs,
-        device=device,
-        early_stopping_patience=early_stopping_patience
+
+    logger.info("Initializing distillation loss and optimizer...")
+    distillation_loss = DistillationLoss(temperature=3, alpha=0.7)
+    #optimizer = torch.optim.Adam(student_model.parameters(), lr=0.001)
+    optimizer = optim.SGD(student_model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)  # Increased weight decay
+
+    student_model, history = distill_teacher(
+        student=student_model,
+        teacher=teacher_model,
+        train_loader=train_loader,
+        test_loader=test_loader,
+        criterion=distillation_loss,
+        optimizer=optimizer,
+        epochs=num_epochs
     )
     
     # Save student model
@@ -158,12 +166,8 @@ def main():
         student_model, history = train_student_model(
             train_loader=train_loader,
             test_loader=test_loader,
-            temperature=args.temperature,
-            alpha=args.alpha,
-            lr=args.lr,
             num_epochs=args.num_epochs,
             device=args.device,
-            early_stopping_patience=args.early_stopping_patience,
             dropout_rate=args.dropout_rate
         )
         # Save training history

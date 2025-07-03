@@ -10,7 +10,7 @@ from models.teacher import get_teacher, save_teacher, train_supervised, load_tea
 from models.student import get_student, save_student
 from distillation.generate_soft_labels import generate_soft_labels, save_distillation_data
 from distillation.train_student import distill_model
-from distillation.train_student_online_kd import distill_teacher, DistillationLoss
+from distillation.train_student_online_kd import simple_distillation, DistillationLoss, train_distill
 
 from quantization.quantize_model import quantize_student_model, evaluate_quantized_model
 from utils.metrics import evaluate_model, measure_inference_time, get_model_size, format_size
@@ -80,7 +80,7 @@ def train_teacher_model(train_loader, test_loader, num_epochs, lr, device, early
     # Save teacher training history
     with open(TRAINING_HISTORY_PATH.replace('.json', '_teacher.json'), 'w') as f:
         json.dump(teacher_history, f, indent=2)
-    return teacher_model
+    return teacher_history
 
 def generate_soft_labels_from_teacher(teacher_model, train_loader, temperature, device):
     """Generate soft labels from the teacher model."""
@@ -104,21 +104,25 @@ def train_student_model(train_loader, test_loader, num_epochs, device, dropout_r
     logger.info("Initializing distillation loss and optimizer...")
     distillation_loss = DistillationLoss(temperature=3, alpha=0.7)
     #optimizer = torch.optim.Adam(student_model.parameters(), lr=0.001)
-    optimizer = optim.SGD(student_model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)  # Increased weight decay
-
-    student_model, history = distill_teacher(
+    optimizer = optim.SGD(student_model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-3)  # Increased weight decay
+    
+    student_history = train_distill(
         student=student_model,
         teacher=teacher_model,
         train_loader=train_loader,
         test_loader=test_loader,
         criterion=distillation_loss,
         optimizer=optimizer,
-        epochs=num_epochs
+        num_epochs=num_epochs,
+        lr=0.05,
+        device=device,
+        early_stopping_patience=15
     )
-    
-    # Save student model
-    save_student(student_model, get_model_path('student'))
-    return student_model, history
+
+    # Save student training history
+    with open(TRAINING_HISTORY_PATH.replace('.json', '_student.json'), 'w') as f:
+        json.dump(student_history, f, indent=2)
+    return student_history
 
 def train_small_model(train_loader, test_loader, num_epochs, lr, device, dropout_rate=0.05, early_stopping_patience=20):
     """Train the small model using standard supervised learning with minimal regularization."""
@@ -134,8 +138,9 @@ def train_small_model(train_loader, test_loader, num_epochs, lr, device, dropout
         early_stopping_patience=early_stopping_patience,
         model_kind='small',
     )
-    # Save small model
-    save_student(small_model, get_model_path('small'))
+    # Save small model training history
+    with open(TRAINING_HISTORY_PATH.replace('.json', '_baseline.json'), 'w') as f:
+        json.dump(student_history, f, indent=2)
     return small_model, history
 
 def main():
@@ -152,7 +157,8 @@ def main():
     # Train teacher model
     if args.train_teacher:
         logger.info("Training teacher model...")
-        teacher_model = train_teacher_model(train_loader, test_loader, args.num_epochs, args.lr, args.device, args.early_stopping_patience)
+        train_teacher_model(train_loader, test_loader, args.num_epochs, args.lr, args.device, args.early_stopping_patience)
+        #teacher_model = load_teacher(get_model_path('teacher'), device=args.device)
     
     # Generate soft labels
     if args.generate_soft_labels:
@@ -163,16 +169,13 @@ def main():
     # Train student model with distillation
     if args.train_student:
         logger.info("Training student model with distillation...")
-        student_model, history = train_student_model(
+        history = train_student_model(
             train_loader=train_loader,
             test_loader=test_loader,
             num_epochs=args.num_epochs,
             device=args.device,
             dropout_rate=args.dropout_rate
         )
-        # Save training history
-        with open(TRAINING_HISTORY_PATH, 'w') as f:
-            json.dump(history, f, indent=2)
     
     # Train baseline model
     if args.train_baseline:
@@ -181,9 +184,6 @@ def main():
             train_loader, test_loader, args.num_epochs, args.lr, args.device,
             dropout_rate=args.dropout_rate, early_stopping_patience=args.early_stopping_patience
         )
-        # Save training history
-        with open(TRAINING_HISTORY_PATH.replace('.json', '_baseline.json'), 'w') as f:
-            json.dump(history, f, indent=2)
     
     # Quantize student model
     if args.quantize:

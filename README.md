@@ -148,7 +148,6 @@ python3 scripts/check_accuracy.py --quantized --model_path models/quantized.pth
 - **Adaptation**: Modified for CIFAR-10 (32x32 input, 10 classes)
 - **Training**: 50 epochs with standard supervised learning
 - **Purpose**: Provides rich knowledge for distillation
-- **Expected Accuracy**: ~93-94%
 
 ### Student Model (MobileNetV2)
 - **Architecture**: MobileNetV2 optimized for CIFAR-10
@@ -156,8 +155,6 @@ python3 scripts/check_accuracy.py --quantized --model_path models/quantized.pth
 - **Features**: 
   - Depthwise separable convolutions for efficiency
   - Configurable dropout rates
-  - Quantization-friendly design
-- **Expected Accuracy**: ~87-89% (with distillation)
 
 ### Quantizable Student (QuantizableStudent)
 - **Base**: MobileNetV2 with quantization-aware modifications
@@ -165,7 +162,6 @@ python3 scripts/check_accuracy.py --quantized --model_path models/quantized.pth
   - Fused conv-bn-relu layers for quantization
   - QAT (Quantization Aware Training) support
   - Static quantization capability
-- **Expected Accuracy**: ~85-87% (quantized)
 
 ### Knowledge Distillation
 - **Method**: Temperature-scaled softmax with combined loss

@@ -14,7 +14,7 @@ for directory in [DATA_DIR, MODELS_DIR, OUTPUT_DIR]:
 TEACHER_MODEL_PATH = os.path.join(MODELS_DIR, 'teacher_model.pth')
 STUDENT_MODEL_PATH = os.path.join(MODELS_DIR, 'student_model.pth')
 SMALL_MODEL_PATH = os.path.join(MODELS_DIR, 'small_model.pth')
-QUANTIZED_MODEL_PATH = os.path.join(MODELS_DIR, 'quantized_model.pth')
+QUANTIZED_MODEL_PATH = os.path.join(MODELS_DIR, 'quantized.pth')
 
 # Data paths
 SOFT_TARGETS_PATH = os.path.join(DATA_DIR, 'cifar10_soft_targets.pt')
@@ -25,7 +25,7 @@ TRAIN_IMAGES_PATH = os.path.join(DATA_DIR, 'cifar10_train_images.pt')
 TRAINING_HISTORY_PATH = os.path.join(OUTPUT_DIR, 'training_history.json')
 EVALUATION_RESULTS_PATH = os.path.join(OUTPUT_DIR, 'evaluation_results.json')
 
-def get_model_path(model_type, quantized=False):
+def get_model_path(model_type):
     """
     Get path for a specific model type.
     
@@ -39,7 +39,9 @@ def get_model_path(model_type, quantized=False):
     if model_type == 'teacher':
         return TEACHER_MODEL_PATH
     elif model_type == 'student':
-        return QUANTIZED_MODEL_PATH if quantized else STUDENT_MODEL_PATH
+        return STUDENT_MODEL_PATH
+    elif 'quant' in model_type:
+        return QUANTIZED_MODEL_PATH
     elif model_type == 'small':
         return SMALL_MODEL_PATH
     else:

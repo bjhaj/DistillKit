@@ -2,7 +2,6 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, TensorDataset
-from distillation.generate_soft_labels import load_distillation_data
 
 def get_cifar10_transforms(train=True):
     """Get CIFAR-10 transforms with data augmentation for training."""
@@ -73,36 +72,3 @@ def get_cifar10_loaders(batch_size=128, num_workers=2, pin_memory=True):
               'dog', 'frog', 'horse', 'ship', 'truck')
     
     return trainloader, testloader, classes
-
-def get_distillation_loader(batch_size=128):
-    """
-    Get a data loader for knowledge distillation training that includes soft labels.
-    
-    Args:
-        batch_size (int): Batch size for training
-        
-    Returns:
-        DataLoader: DataLoader with soft labels for distillation training
-    """
-    try:
-        soft_targets, hard_labels, images = load_distillation_data()
-        dataset = TensorDataset(images, soft_targets, hard_labels)
-        return DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    except FileNotFoundError:
-        raise RuntimeError("Soft labels not found. Please generate them first using --generate-soft-labels")
-
-def create_distillation_dataset(images, soft_targets, hard_labels, batch_size=128):
-    """
-    Create a DataLoader for knowledge distillation training.
-    
-    Args:
-        images (torch.Tensor): Training images
-        soft_targets (torch.Tensor): Soft targets from teacher
-        hard_labels (torch.Tensor): Hard labels
-        batch_size (int): Batch size for training
-        
-    Returns:
-        DataLoader: DataLoader for distillation training
-    """
-    dataset = TensorDataset(images, soft_targets, hard_labels)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True) 

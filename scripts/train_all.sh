@@ -14,16 +14,7 @@ echo "Step 4: Training baseline model with minimal regularization..."
 python3 scripts/run_all.py --train-baseline --num-epochs 20 --dropout-rate 0.1
 
 echo "Step 5: Quantizing student model..."
-python3 scripts/run_all.py --quantize
+python3 scripts/run_all.py --quantize --model-to-quantize '/scratch/bjhaj/kd_quantization_project/models/student_model.pth' --save-path '/scratch/bjhaj/kd_quantization_project/models/quantized.pth'
 
-echo "Step 6: Running final evaluation..."
-python3 scripts/run_all.py --evaluate
-
-echo "Training and evaluation complete! Results are saved in:"
-echo "- models/teacher_model.pth"
-echo "- models/student_model.pth"
-echo "- models/small_model.pth"
-echo "- models/quantized_student_model.pth"
-echo "- outputs/training_history.json"
-echo "- outputs/training_history_baseline.json"
-echo "- outputs/evaluation_results.json"
+echo "step 6: check accuracy"
+python3 scripts/check_accuracy.py --model_kind 'quantized_mobilenet' --model_path '/scratch/bjhaj/kd_quantization_project/models/qat_quantized_student.pth' --quantized

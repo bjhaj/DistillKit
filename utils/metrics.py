@@ -1,108 +1,46 @@
 import torch
 import time
 import os
-from tqdm import tqdm
+import argparse
+# Optional: MACs / FLOPs
+try:
+    from fvcore.nn import FlopCountAnalysis, flop_count_table
+    FVCORE_AVAILABLE = True
+except ImportError:
+    FVCORE_AVAILABLE = False
 
-def evaluate_model(model, test_loader, device=None):
-    """
-    Evaluate model accuracy on test set.
-    
-    Args:
-        model (nn.Module): Model to evaluate
-        test_loader (DataLoader): Test data loader
-        device (str, optional): Device to run evaluation on
-        
-    Returns:
-        float: Test accuracy
-    """
-    if device is None:
-        device = next(model.parameters()).device
-    
+def measure_latency_throughput(model, input_shape=(1, 3, 32, 32), num_runs=100, device='cpu'):
+    model.to(device)
     model.eval()
-    correct = 0
-    total = 0
-    
+    torch.set_num_threads(1)  # Simulate edge conditions
+
+    dummy_input = torch.randn(*input_shape).to(device)
+
+    # Warm-up
     with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc="Evaluating"):
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-    
-    return 100. * correct / total
+        for _ in range(10):
+            _ = model(dummy_input)
 
-def measure_inference_time(model, test_loader, num_batches=5, device=None):
-    """
-    Measure model inference time.
-    
-    Args:
-        model (nn.Module): Model to evaluate
-        test_loader (DataLoader): Test data loader
-        num_batches (int): Number of batches to measure
-        device (str, optional): Device to run evaluation on
-        
-    Returns:
-        float: Average inference time per batch
-    """
-    if device is None:
-        device = next(model.parameters()).device
-    
-    model.eval()
-    inference_times = []
-    
+    # Measure time
     with torch.no_grad():
-        for i, (images, _) in enumerate(test_loader):
-            if i >= num_batches:
-                break
-                
-            images = images.to(device)
-            
-            # Warmup
-            if i == 0:
-                for _ in range(10):
-                    model(images)
-            
-            # Measure inference time
-            start_time = time.time()
-            model(images)
-            end_time = time.time()
-            inference_times.append(end_time - start_time)
-    
-    return sum(inference_times) / len(inference_times)
+        start = time.time()
+        for _ in range(num_runs):
+            _ = model(dummy_input)
+        end = time.time()
 
-def get_model_size(model, path=None):
-    """
-    Get model size in bytes.
-    
-    Args:
-        model (nn.Module): Model to measure
-        path (str, optional): Path to save temporary file
-        
-    Returns:
-        int: Model size in bytes
-    """
-    if path is None:
-        path = "temp_model.pt"
-    
-    torch.save(model.state_dict(), path)
-    size = os.path.getsize(path)
-    os.remove(path)  # Clean up temporary file
-    
-    return size
+    total_time = end - start
+    latency_ms = (total_time / num_runs) * 1000
+    throughput = num_runs / total_time
 
-def format_size(size_bytes):
-    """
-    Format size in bytes to human readable format.
-    
-    Args:
-        size_bytes (int): Size in bytes
-        
-    Returns:
-        str: Formatted size string
-    """
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024:
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.2f} TB" 
+    return latency_ms, throughput
+
+def get_model_size(path):
+    size_mb = os.path.getsize(path) / 1e6
+    return round(size_mb, 2)
+
+def measure_flops(model, input_shape=(1, 3, 32, 32)):
+    if not FVCORE_AVAILABLE:
+        return "fvcore not installed"
+    input_tensor = torch.randn(*input_shape)
+    flops = FlopCountAnalysis(model, input_tensor)
+    return flop_count_table(flops, max_depth=2)

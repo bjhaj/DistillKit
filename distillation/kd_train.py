@@ -3,9 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 from models.teacher import load_teacher, get_model_path
-from models.student import get_student, save_student
 from models.teacher import unfreeze_layers_progressively, save_teacher
-from data.cifar10_loader import get_cifar10_loaders, get_distillation_loader
+from utils.additional_augmentation import mixup_data, cutmix_data
 import copy
 import torch.optim as optim
 import os
@@ -34,80 +33,8 @@ class DistillationLoss(nn.Module):
 
 
 
-def simple_distillation(student, teacher, train_loader, test_loader, criterion, optimizer, epochs=40):
-    teacher.eval()
-    student.train()
-
-    best_acc = 0.0
-    best_model = None
-    history = []
-
-    for epoch in range(epochs):
-        running_loss = 0.0
-        correct = 0
-        total = 0
-
-        for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
-            images, labels = images.to('cuda'), labels.to('cuda')
-            
-            with torch.no_grad():
-                teacher_outputs = teacher(images)
-            
-            student_outputs = student(images)
-            loss = criterion(student_outputs, teacher_outputs, labels)
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            running_loss += loss.item()
-            _, preds = student_outputs.max(1)
-            correct += preds.eq(labels).sum().item()
-            total += labels.size(0)
-
-        avg_train_loss = running_loss / len(train_loader)
-        train_acc = 100. * correct / total
-
-        # Evaluation
-        student.eval()
-        test_correct = 0
-        test_total = 0
-
-        with torch.no_grad():
-            for images, labels in test_loader:
-                images, labels = images.to('cuda'), labels.to('cuda')
-                outputs = student(images)
-                _, preds = outputs.max(1)
-                test_correct += preds.eq(labels).sum().item()
-                test_total += labels.size(0)
-
-        test_acc = 100. * test_correct / test_total
-        student.train()
-
-        # Save best model
-        if test_acc > best_acc:
-            best_acc = test_acc
-            best_model = copy.deepcopy(student.state_dict())
-
-        # Save training history
-        history.append({
-            'epoch': epoch + 1,
-            'train_loss': avg_train_loss,
-            'train_acc': train_acc,
-            'test_acc': test_acc
-        })
-
-        print(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Test Acc={test_acc:.2f}%")
-
-    if best_model is not None:
-        student.load_state_dict(best_model)
-
-    return student, history
-
-
-
 def train_distill(student, teacher, train_loader, test_loader, criterion, optimizer, num_epochs=20, lr=0.01, device='cuda', 
-                    early_stopping_patience=7, min_delta=0.001, use_progressive_unfreezing=True, model_kind='student'):
+                    early_stopping_patience=7, min_delta=0.001, use_progressive_unfreezing=True, model_kind='student', augmentation=None, mix_alpha=1.0, qat=False):
     """
     Enhanced supervised training loop with aggressive regularization for teacher model.
     """
@@ -116,8 +43,10 @@ def train_distill(student, teacher, train_loader, test_loader, criterion, optimi
     # Ensure teacher is in eval mode
     teacher.eval()
     # More aggressive learning rate scheduling
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.3, 
-                                                   patience=3, min_lr=1e-6)
+    # replace with cosine annealing if needed
+    #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.3, patience=3, min_lr=1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
+
     ce_loss = nn.CrossEntropyLoss() 
     history = []
     best_acc = 0.0
@@ -127,7 +56,15 @@ def train_distill(student, teacher, train_loader, test_loader, criterion, optimi
         # Progressive unfreezing to reduce overfitting
         if use_progressive_unfreezing:
             unfreeze_layers_progressively(student, epoch)
-        
+        # 🔥 QAT warmup control
+        if qat:
+            if epoch == 0:
+                student.apply(torch.ao.quantization.disable_observer)
+                student.apply(torch.ao.quantization.disable_fake_quant)
+            elif epoch == 20:
+                student.apply(torch.ao.quantization.enable_observer)
+                student.apply(torch.ao.quantization.enable_fake_quant)
+            
         # Training phase with stronger regularization
         student.train()
         train_loss = 0
@@ -137,13 +74,23 @@ def train_distill(student, teacher, train_loader, test_loader, criterion, optimi
         pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')
         for images, targets in pbar:
             images, targets = images.to(device), targets.to(device)
-            
+            # add in data augmentation if specified
+            if augmentation == 'mixup':
+                images, y_a, y_b, lam = mixup_data(images, targets, alpha=mix_alpha)
+            elif augmentation == 'cutmix':
+                images, y_a, y_b, lam = cutmix_data(images, targets, alpha=mix_alpha)
+
             with torch.no_grad():
                 teacher_outputs = teacher(images)
             
             optimizer.zero_grad()
             student_outputs = student(images)
-            loss = criterion(student_outputs, teacher_outputs, targets)
+            #loss = criterion(student_outputs, teacher_outputs, targets)
+            if augmentation in ['mixup', 'cutmix']:
+                loss = lam * criterion(student_outputs, teacher_outputs, y_a) + (1 - lam) * criterion(student_outputs, teacher_outputs, y_b)
+            else:
+                loss = criterion(student_outputs, teacher_outputs, targets)
+            
             loss.backward()
             
             # Gradient clipping to prevent exploding gradients
@@ -201,6 +148,7 @@ def train_distill(student, teacher, train_loader, test_loader, criterion, optimi
         if current_acc > best_acc + min_delta:
             best_acc = current_acc
             patience_counter = 0
+            # Save the best model
             save_teacher(student, get_model_path(model_kind))
         else:
             patience_counter += 1

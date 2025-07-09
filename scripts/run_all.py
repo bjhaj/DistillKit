@@ -5,18 +5,14 @@ import logging
 from pathlib import Path
 import torch.optim as optim
 
-from data.cifar10_loader import get_cifar10_loaders, get_distillation_loader
-from models.teacher import get_teacher, save_teacher, train_supervised, load_teacher
-from models.student import get_student, save_student
-from distillation.generate_soft_labels import generate_soft_labels, save_distillation_data
-from distillation.train_student import distill_model
-from distillation.train_student_online_kd import simple_distillation, DistillationLoss, train_distill
+from data.cifar10_loader import get_cifar10_loaders
+from models.teacher import get_teacher, train_supervised, load_teacher
+from models.student import get_student
+from models.quant_student import QuantizableStudent
+from distillation.kd_train import DistillationLoss, train_distill
 
-from quantization.quantize_model import quantize_student_model, evaluate_quantized_model
-from utils.metrics import evaluate_model, measure_inference_time, get_model_size, format_size
 from utils.paths import (
-    get_model_path, get_data_path, TRAINING_HISTORY_PATH,
-    EVALUATION_RESULTS_PATH, OUTPUT_DIR
+    get_model_path, TRAINING_HISTORY_PATH, OUTPUT_DIR
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +41,8 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.1, help='Learning rate')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                       help='Device to train on')
+    parser.add_argument('--save-path', type=str, default=OUTPUT_DIR,
+                      help='Path to save model or training history')
     
     # Distillation-specific parameters
     parser.add_argument('--temperature', type=float, default=4.0, 
@@ -55,14 +53,21 @@ def parse_args():
     # Regularization parameters
     parser.add_argument('--dropout-rate', type=float, default=0.05,
                       help='Dropout rate for student model')
-    parser.add_argument('--mixup-alpha', type=float, default=0.0,
-                      help='Mixup alpha parameter (0 to disable)')
     parser.add_argument('--early-stopping-patience', type=int, default=20,
                       help='Early stopping patience')
     parser.add_argument('--label-smoothing', type=float, default=0.0,
                       help='Label smoothing factor')
-    
+    parser.add_argument('--mix-alpha', type=float, default=1.0,
+                      help='Weight for mixup loss vs hard loss')
+    parser.add_argument('--augmentation', type=str, default=None,
+                      help='Data augmentation strategy (none, mixup, cutmix)')
+
+    # Quantization parameters
+    parser.add_argument('--model-to-quantize', type=str, default='student', help='Model to quantize (student or teacher)')
+    parser.add_argument('--qat', action='store_true',
+                      help='Perform Quantization-Aware Training (QAT) on the student model')
     return parser.parse_args()
+
 
 def train_teacher_model(train_loader, test_loader, num_epochs, lr, device, early_stopping_patience=20):
     """Train the teacher model using standard supervised learning with minimal early stopping."""
@@ -82,30 +87,27 @@ def train_teacher_model(train_loader, test_loader, num_epochs, lr, device, early
         json.dump(teacher_history, f, indent=2)
     return teacher_history
 
-def generate_soft_labels_from_teacher(teacher_model, train_loader, temperature, device):
-    """Generate soft labels from the teacher model."""
-    logger.info("Generating soft labels...")
-    soft_targets, hard_labels, images = generate_soft_labels(
-        teacher_model, train_loader, temperature, device
-    )
-    save_distillation_data(soft_targets, hard_labels, images)
-    return soft_targets, hard_labels, images
-
-def train_student_model(train_loader, test_loader, num_epochs, device, dropout_rate):
+def train_student_model(train_loader, test_loader, num_epochs, device, dropout_rate, qat=False):
     """Train the student model using knowledge distillation with minimal regularization."""
     logger.info("Training student model with distillation...")
     # Load teacher model
     teacher_model = load_teacher(get_model_path('teacher'), device=device)
     teacher_model.to(device)
     # Load student model
-    student_model = get_student(0.1)  # Use dropout rate for student model
+    student_model = QuantizableStudent(dropout=0.1)  # Use dropout rate for student model
+    if qat:
+        logger.info("Preparing student model for Quantization-Aware Training (QAT)...")
+        student_model.fuse_model()  # Fuse layers for QAT
+        student_model.qconfig = torch.ao.quantization.get_default_qat_qconfig('fbgemm')
+        torch.ao.quantization.prepare_qat(student_model, inplace=True)
+
     student_model = student_model.to(device)
 
     logger.info("Initializing distillation loss and optimizer...")
     distillation_loss = DistillationLoss(temperature=3, alpha=0.7)
     #optimizer = torch.optim.Adam(student_model.parameters(), lr=0.001)
     optimizer = optim.SGD(student_model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-3)  # Increased weight decay
-    
+    model_kind = 'student' if not qat else 'qat_student'
     student_history = train_distill(
         student=student_model,
         teacher=teacher_model,
@@ -116,8 +118,19 @@ def train_student_model(train_loader, test_loader, num_epochs, device, dropout_r
         num_epochs=num_epochs,
         lr=0.05,
         device=device,
-        early_stopping_patience=15
+        early_stopping_patience=50,
+        model_kind=model_kind,
+        # drop to 0.1
+        mix_alpha=1.0,
+        augmentation='cutmix',  # Use cutmix for student training
+        qat=qat
     )
+    if qat:
+        logger.info("Converting student model to quantized version after QAT...")
+        student_model.to('cpu')
+        student_model.eval()
+        torch.ao.quantization.convert(student_model, inplace=True)
+        torch.save(student_model.state_dict(), "models/qat_quantized_student.pth")
 
     # Save student training history
     with open(TRAINING_HISTORY_PATH.replace('.json', '_student.json'), 'w') as f:
@@ -140,8 +153,8 @@ def train_small_model(train_loader, test_loader, num_epochs, lr, device, dropout
     )
     # Save small model training history
     with open(TRAINING_HISTORY_PATH.replace('.json', '_baseline.json'), 'w') as f:
-        json.dump(student_history, f, indent=2)
-    return small_model, history
+        json.dump(history, f, indent=2)
+    return history
 
 def main():
     args = parse_args()
@@ -157,15 +170,8 @@ def main():
     # Train teacher model
     if args.train_teacher:
         logger.info("Training teacher model...")
-        train_teacher_model(train_loader, test_loader, args.num_epochs, args.lr, args.device, args.early_stopping_patience)
-        #teacher_model = load_teacher(get_model_path('teacher'), device=args.device)
-    
-    # Generate soft labels
-    if args.generate_soft_labels:
-        logger.info("Loading teacher model for soft label generation...")
-        teacher_model = load_teacher(get_model_path('teacher'), device=args.device)
-        generate_soft_labels_from_teacher(teacher_model, train_loader, args.temperature, args.device)
-    
+        teacher_history = train_teacher_model(train_loader, test_loader, args.num_epochs, args.lr, args.device, args.early_stopping_patience)
+
     # Train student model with distillation
     if args.train_student:
         logger.info("Training student model with distillation...")
@@ -174,80 +180,28 @@ def main():
             test_loader=test_loader,
             num_epochs=args.num_epochs,
             device=args.device,
-            dropout_rate=args.dropout_rate
+            dropout_rate=args.dropout_rate,
+            qat=args.qat
         )
     
     # Train baseline model
     if args.train_baseline:
         logger.info("Training baseline model...")
-        baseline_model, history = train_small_model(
+        history = train_small_model(
             train_loader, test_loader, args.num_epochs, args.lr, args.device,
             dropout_rate=args.dropout_rate, early_stopping_patience=args.early_stopping_patience
         )
     
     # Quantize student model
     if args.quantize:
-        logger.info("Quantizing student model...")
-        student_model = get_student()
-        student_model.load_state_dict(torch.load(get_model_path('student')))
-        student_model = student_model.to(args.device)
-        quantized_model = quantize_student_model(student_model, train_loader, args.device)
-        quantized_path = get_model_path('student', quantized=True)
-        save_student(quantized_model, quantized_path)
+        model_fp32 = QuantizableStudent(dropout=0.1)
+        model_fp32.quantize_model(
+            train_loader=train_loader,
+            state_dict_path=args.model_to_quantize,
+            save_path=args.save_path
+        )
     
-    # Evaluate models
-    if args.evaluate:
-        logger.info("Evaluating models...")
-        results = {}
-        
-        # Load and evaluate teacher
-        teacher_model = load_teacher(get_model_path('teacher'), device=args.device)
-        results['teacher'] = {
-            'accuracy': evaluate_model(teacher_model, test_loader, args.device),
-            'inference_time': measure_inference_time(teacher_model, test_loader, device=args.device),
-            'model_size': format_size(get_model_size(teacher_model))
-        }
-        
-        # Load and evaluate student
-        student_model = get_student()
-        student_model.load_state_dict(torch.load(get_model_path('student')))
-        student_model = student_model.to(args.device)
-        results['student'] = {
-            'accuracy': evaluate_model(student_model, test_loader, args.device),
-            'inference_time': measure_inference_time(student_model, test_loader, device=args.device),
-            'model_size': format_size(get_model_size(student_model))
-        }
-        
-        # Load and evaluate baseline
-        baseline_model = get_student()
-        baseline_model.load_state_dict(torch.load(get_model_path('small')))
-        baseline_model = baseline_model.to(args.device)
-        results['baseline'] = {
-            'accuracy': evaluate_model(baseline_model, test_loader, args.device),
-            'inference_time': measure_inference_time(baseline_model, test_loader, device=args.device),
-            'model_size': format_size(get_model_size(baseline_model))
-        }
-        
-        # Evaluate quantized model if it exists
-        try:
-            quantized_model = get_student()
-            quantized_model.load_state_dict(torch.load(get_model_path('student', quantized=True)))
-            quantized_model = quantized_model.to(args.device)
-            results['quantized'] = evaluate_quantized_model(quantized_model, test_loader, args.device)
-            results['quantized']['model_size'] = format_size(get_model_size(quantized_model))
-        except FileNotFoundError:
-            logger.info("Quantized model not found, skipping evaluation")
-        
-        # Save evaluation results
-        with open(EVALUATION_RESULTS_PATH, 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        # Print results
-        logger.info("\nEvaluation Results:")
-        for model_name, metrics in results.items():
-            logger.info(f"\n{model_name.upper()}:")
-            for metric_name, value in metrics.items():
-                logger.info(f"{metric_name}: {value}")
+    
 
 if __name__ == '__main__':
     main() 

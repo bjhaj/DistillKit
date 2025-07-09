@@ -20,7 +20,7 @@ def get_student(dropout_rate=0.05, quantize=True):
     net.features[0][0] = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False)
 
     net.classifier = nn.Sequential(
-        #nn.Dropout(dropout_rate),
+        nn.Dropout(dropout_rate),
         nn.Linear(net.last_channel, 10)
     )
 

@@ -11,14 +11,22 @@ import numpy as np
 from data.cifar10_loader import get_cifar10_loaders
 from models.student import get_student
 from models.teacher import get_teacher
-from utils.paths import get_model_path
+from models.quant_student import QuantizableStudent
+from utils.metrics import measure_latency_throughput, get_model_size, measure_flops
+import os
+
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained model on CIFAR-10.")
-    parser.add_argument('--model_name', type=str, default='small',
+    parser.add_argument('--model_kind', type=str, default='small',
                         help='Name of the model to load (default: small)')
+    parser.add_argument('--model_path', type=str, default='small',
+                        help='Path to the model to load (default: small)')
+    parser.add_argument('--quantized', action='store_true',
+                        help='Whether to use the quantized model')
     args = parser.parse_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    is_quantized = args.quantized
+    device = torch.device('cuda' if torch.cuda.is_available() and not is_quantized else 'cpu')
     print(f"Using device: {device}")
     
     # Load data
@@ -26,25 +34,55 @@ def main():
     _, test_loader, _ = get_cifar10_loaders(batch_size=256, num_workers=2)
     
     # Load baseline model
-    print(f"Loading model '{args.model_name}'...")
-    if args.model_name == 'small' or args.model_name == 'student':
-        baseline_model = get_student()
-    else:
+    print(f"Loading model '{args.model_kind}'...")
+    if args.model_kind == 'classic_small' or args.model_kind == 'classic_student':
+        baseline_model = get_student(dropout=0.1)
+    elif args.model_kind == 'student':
+        baseline_model = QuantizableStudent(dropout=0.1)
+    elif args.model_kind == 'float_qat_student':
+        baseline_model = QuantizableStudent(dropout=0.1)
+        # add other shit so that architecture actually matches
+        baseline_model.fuse_model()
+        baseline_model.qconfig = torch.ao.quantization.get_default_qat_qconfig('fbgemm')
+        torch.ao.quantization.prepare_qat(baseline_model, inplace=True)
+    elif args.model_kind == 'teacher':
         baseline_model = get_teacher()
+    elif args.quantized:
+        baseline_model = QuantizableStudent(dropout=0.1)
+        baseline_model.fuse_model()
+        baseline_model.qconfig = torch.ao.quantization.get_default_qconfig('fbgemm')
+        torch.ao.quantization.prepare(baseline_model, inplace=True)
+        torch.ao.quantization.convert(baseline_model, inplace=True)
+    elif args.model_kind =='teacher':
+        baseline_model = get_teacher()
+    else:
+        raise ValueError(f"Unknown model name: {args.model_kind}")
     
-    model_path = get_model_path(args.model_name)
+    model_path = args.model_path
     print(f"Looking for model at: {model_path}")
 
+    #load weights
     try:
         baseline_model.load_state_dict(torch.load(model_path, map_location=device))
-        print(f"✓ '{args.model_name}' loaded successfully")
+        print(f"✓ '{args.model_kind}' loaded successfully")
     except Exception as e:
-        print(f"✗ Error loading model '{args.model_name}': {e}")
+        print(f"✗ Error loading model '{args.model_kind}': {e}")
         return
     
     baseline_model.to(device)
     baseline_model.eval()
-    
+
+    print("\n=== Profiling Model ===")
+    latency, throughput = measure_latency_throughput(baseline_model, device=device)
+    print(f"  Inference Latency: {latency:.2f} ms")
+    print(f"  Throughput: {throughput:.2f} samples/sec")
+
+    if os.path.exists(model_path):
+        size = get_model_size(model_path)
+        print(f"  Model File Size: {size:.2f} MB")
+    else:
+        print(f"  Model path '{model_path}' not found to measure size")
+
     # Test on a small batch first
     print("\n=== Testing on first batch ===")
     for batch_idx, (data, target) in enumerate(test_loader):
@@ -122,13 +160,13 @@ def main():
                     print(f"  -> predicted as {class_names[pred_class]}: {count}")
     
     print(f"\n=== Summary ===")
-    print(f"{args.model_name} accuracy: {accuracy:.2f}%")
+    print(f"{args.model_kind} accuracy: {accuracy:.2f}%")
     if accuracy < 50:
-        print(f"⚠️  WARNING: {args.model_name} is suspiciously low!")
+        print(f"⚠️  WARNING: {args.model_kind} is suspiciously low!")
     elif accuracy > 70:
-        print(f"✓ {args.model_name} appears to be working well")
+        print(f"✓ {args.model_kind} appears to be working well")
     else:
-        print(f"? {args.model_name} has moderate accuracy")
+        print(f"? {args.model_kind} has moderate accuracy")
 
 if __name__ == "__main__":
     main()

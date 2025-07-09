@@ -184,7 +184,7 @@ The project tracks multiple performance dimensions:
 | Teacher (ResNet152) | ~60M | ~96.6% | ~240MB | Baseline | 1x |
 | Student (MobileNetV2) | ~2.3M | ~94% | ~9MB | 3x faster | 27x smaller |
 | Quantized Student | ~2.3M | ~93.5% | ~2.96MB | 5x faster | 81x smaller |
-| Baseline (no distillation) | ~2.3M | ~82% | ~9MB | 3x faster | 27x smaller |
+| Baseline (no distillation) | ~2.3M | ~91% | ~9MB | 3x faster | 27x smaller |
 
 *Note: Actual results may vary based on training configuration and hardware*
 

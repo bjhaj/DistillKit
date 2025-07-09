@@ -4,9 +4,6 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 echo "Step 1: Training teacher model with pretrained ResNet152..."
 python3 scripts/run_all.py --train-teacher --num-epochs 50
 
-echo "Step 2: Generating soft labels from teacher..."
-python3 scripts/run_all.py --generate-soft-labels --temperature 4.0
-
 echo "Step 3: Training student model with distillation and moderate regularization..."
 python3 scripts/run_all.py --train-student --num-epochs 20 --dropout-rate 0.1
 

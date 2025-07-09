@@ -26,10 +26,6 @@ kd_quantization_project/
 ├── data/
 │   ├── __init__.py                 # Package initialization
 │   ├── cifar10_loader.py           # CIFAR-10 data loading utilities
-│   ├── cifar-10-batches-py/        # CIFAR-10 dataset files
-│   ├── cifar-10-python.tar.gz      # Original CIFAR-10 archive
-│   ├── cifar10_soft_targets.pt     # Pre-computed soft targets from teacher
-│   ├── cifar10_train_images.pt     # Processed training images
 │   └── cifar10_labels.pt           # Training labels
 ├── distillation/
 │   ├── __init__.py                 # Package initialization
@@ -40,11 +36,6 @@ kd_quantization_project/
 │   ├── student.py                  # MobileNetV2 student model
 │   ├── teacher.py                  # ResNet152 teacher model
 │   ├── quant_student.py            # Quantizable student model variants
-│   ├── teacher_model.pth           # Trained teacher model weights
-│   ├── student_model.pth           # Trained student model weights
-│   ├── small_model.pth             # Baseline model weights
-│   ├── qat_quantized_student.pth   # QAT quantized model weights
-│   └── quantized.pth               # Static quantized model weights
 ├── scripts/
 │   ├── __init__.py                 # Package initialization
 │   ├── run_all.py                  # Main training pipeline
@@ -54,15 +45,7 @@ kd_quantization_project/
 │   ├── __init__.py                 # Package initialization
 │   ├── metrics.py                  # Performance measurement tools
 │   ├── paths.py                    # Path management
-│   └── additional_augmentation.py  # Data augmentation techniques
-├── outputs/
-│   ├── training_history_teacher.json    # Teacher training metrics
-│   ├── training_history_student.json    # Student training metrics
-│   ├── training_history_baseline.json   # Baseline training metrics
-│   ├── training_history_quant_mod.json  # QAT training metrics
-│   └── evaluation_results.json          # Final evaluation results
-├── .git/                           # Git repository files
-├── .gitignore                      # Git ignore file
+│   └── additional_augmentation.py  # Data augmentation techniques (MixUp, CutMix, etc)
 └── requirements.txt                # Python dependencies
 ```
 
@@ -82,8 +65,7 @@ matplotlib
 ### Installation
 
 ```bash
-git clone <repository-url>
-cd kd_quantization_project
+git clone https://github.com/bjhaj/DistillKit.git
 pip install -r requirements.txt  # If available, or install packages manually
 ```
 
